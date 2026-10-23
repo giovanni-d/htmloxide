@@ -1,0 +1,13 @@
+[package]
+name = "live-todos"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+axum = "0.8.9"
+futures-util = "0.3"
+htmloxide = { version = "0.1.0", path = "../../htmloxide" }
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "signal"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }

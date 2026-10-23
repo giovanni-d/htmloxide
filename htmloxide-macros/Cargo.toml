@@ -1,0 +1,21 @@
+[package]
+name = "htmloxide-macros"
+description = "Procedural macros for htmloxide."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+proc-macro2-diagnostics = { version = "0.11", default-features = false }
+quote = "1.0.47"
+rstml = { version = "0.13.1", features = ["rawtext-stable-hack"] }
+syn = { version = "3", features = ["full", "visit", "visit-mut"] }
+
+[lib]
+proc-macro = true
