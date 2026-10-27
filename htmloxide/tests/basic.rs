@@ -1,19 +1,12 @@
-//! Tests for `html!` with plain HTML: text, escaping, tags, attributes,
-//! whitespace, and how values of different types render. Each test compares
-//! the generated HTML with the exact string a browser would receive.
+//! `html!` with plain HTML: text, escaping, tags, attributes, whitespace,
+//! and how values of each type are written.
 
-use htmloxide::{Markup, PreEscaped, Render, each, html};
+use htmloxide::{Js, Markup, PreEscaped, Render, each, html, js};
 
-/// Shorthand for `into_string()`, to keep the assertions short.
 fn s(m: Markup) -> String {
     m.into_string()
 }
 
-// --------------------------------------------------
-// Tests: elements and text
-// --------------------------------------------------
-
-// Quoted text is written without its quotes.
 #[test]
 fn elements_and_static_attributes() {
     let out = html! { <div class="card" id="main"><p>"quoted text"</p></div> };
@@ -23,16 +16,12 @@ fn elements_and_static_attributes() {
     );
 }
 
-// Rust tokens don't record spaces, so this checks that the macro recovers
-// them from the source text.
 #[test]
 fn unquoted_text_keeps_spaces() {
     let out = html! { <p>Hello world, how are you?</p> };
     assert_eq!(s(out), "<p>Hello world, how are you?</p>");
 }
 
-// Unquoted text keeps the spaces next to `{..}` blocks, and punctuation
-// right after a block stays attached to it.
 #[test]
 fn mixed_text_and_blocks() {
     let name = "Ada";
@@ -41,11 +30,6 @@ fn mixed_text_and_blocks() {
     assert_eq!(s(out), "<p>Hi Ada, you have 3 new messages.</p>");
 }
 
-// --------------------------------------------------
-// Tests: escaping
-// --------------------------------------------------
-
-// A value from `{..}` can't inject markup, in an attribute or in text.
 #[test]
 fn dynamic_values_are_escaped() {
     let evil = r#"<script>alert("x")</script>"#;
@@ -57,7 +41,6 @@ fn dynamic_values_are_escaped() {
     );
 }
 
-// Literals get the same escaping as `{..}` values, applied by the macro.
 #[test]
 fn static_literals_are_escaped_at_compile_time() {
     let out = html! { <p title="a \"b\" <c>">"1 < 2 & 3 > 2"</p> };
@@ -67,7 +50,6 @@ fn static_literals_are_escaped_at_compile_time() {
     );
 }
 
-// `PreEscaped` opts out of escaping, for HTML that is already safe.
 #[test]
 fn pre_escaped_is_not_escaped() {
     let raw = PreEscaped("<b>bold</b>");
@@ -75,13 +57,32 @@ fn pre_escaped_is_not_escaped() {
     assert_eq!(s(out), "<div><b>bold</b></div>");
 }
 
-// --------------------------------------------------
-// Tests: HTML syntax
-// --------------------------------------------------
+// The attribute holds the markup's HTML as text, so the escaped text inside
+// the markup is escaped a second time.
+#[test]
+fn markup_in_attributes() {
+    let user = "<script>";
+    let tip = html! { <b class="x">{user}</b> };
+    let out = html! { <span data-tip={tip}></span> };
+    assert_eq!(
+        s(out),
+        r#"<span data-tip="&lt;b class=&quot;x&quot;&gt;&amp;lt;script&amp;gt;&lt;/b&gt;"></span>"#
+    );
+}
 
-// Void elements (`<br>`, `<img>`, `<input>`) need no closing tag, and
-// `<input />` is written as `<input>`. `<span />` gets a real closing tag,
-// because browsers don't treat `<span/>` as closed.
+#[test]
+fn render_impl_quotes_in_attributes() {
+    struct Raw;
+    impl Render for Raw {
+        fn render_to(&self, b: &mut String) {
+            b.push_str(r#"x" onclick="alert(1)"#);
+        }
+    }
+    let out = html! { <p title={Raw}></p> };
+    assert_eq!(s(out), r#"<p title="x&quot; onclick=&quot;alert(1)"></p>"#);
+}
+
+// Browsers do not treat `<span/>` as closed, so it gets a closing tag.
 #[test]
 fn void_elements_and_self_closing() {
     let out = html! { <div><br><img src="a.png" alt="A"><input type="text" /><span /></div> };
@@ -91,7 +92,6 @@ fn void_elements_and_self_closing() {
     );
 }
 
-// The line breaks between tags are formatting and don't reach the output.
 #[test]
 fn doctype_and_full_page() {
     let title = "Home";
@@ -108,8 +108,6 @@ fn doctype_and_full_page() {
     );
 }
 
-// htmx (`hx-post`, `hx-on:click`), `data-*` and `aria-*` names are written as
-// typed.
 #[test]
 fn dashed_and_namespaced_attributes() {
     let out = html! { <button hx-post="/clicked" data-id="7" aria-label="Go" hx-on:click="x()">Go</button> };
@@ -119,19 +117,12 @@ fn dashed_and_namespaced_attributes() {
     );
 }
 
-// Web components have dashed tag names.
 #[test]
 fn custom_elements() {
     let out = html! { <my-widget size="2"></my-widget> };
     assert_eq!(s(out), r#"<my-widget size="2"></my-widget>"#);
 }
 
-// --------------------------------------------------
-// Tests: attribute values
-// --------------------------------------------------
-
-// `true` keeps the attribute and `false` drops it, whether the value is a
-// literal (handled at compile time) or a `bool` variable (at runtime).
 #[test]
 fn boolean_attributes() {
     let on = true;
@@ -140,7 +131,55 @@ fn boolean_attributes() {
     assert_eq!(s(out), "<input disabled checked readonly>");
 }
 
-// `Some(x)` writes the attribute with `x` as its value; `None` drops it.
+#[test]
+fn true_false_attributes() {
+    let on = true;
+    let off = false;
+    let out = html! {
+        <b aria-pressed={on} aria-expanded={off} aria-hidden=true draggable={off}
+           data-open={on} data-closed={off} data-fixed=true></b>
+    };
+    assert_eq!(
+        s(out),
+        concat!(
+            r#"<b aria-pressed="true" aria-expanded="false" aria-hidden="true" draggable="false""#,
+            r#" data-open="true" data-closed="false" data-fixed="true"></b>"#,
+        )
+    );
+}
+
+#[test]
+fn optional_bool_attributes() {
+    let none: Option<bool> = None;
+    let yes = Some(true);
+    let no = Some(false);
+    let out = html! {
+        <input aria-invalid={none} aria-busy={yes} aria-hidden={no} disabled={none} checked={yes} required={no}>
+    };
+    assert_eq!(
+        s(out),
+        r#"<input aria-busy="true" aria-hidden="false" checked>"#
+    );
+}
+
+// `data-hx-*` follows the htmx rule, not the `data-*` one.
+#[test]
+fn htmx_bool_attributes() {
+    let on = true;
+    let off = false;
+    let out = html! {
+        <div hx-boost={on} hx-push-url={off} hx-history={off} hx-preserve={on} data-hx-boost={on}></div>
+        <div hx-preserve={off} data-hx-preserve={off}></div>
+    };
+    assert_eq!(
+        s(out),
+        concat!(
+            r#"<div hx-boost="true" hx-push-url="false" hx-history="false" hx-preserve data-hx-boost="true"></div>"#,
+            "<div></div>",
+        )
+    );
+}
+
 #[test]
 fn optional_attributes() {
     let some: Option<&str> = Some("x");
@@ -149,8 +188,100 @@ fn optional_attributes() {
     assert_eq!(s(out), r#"<a href="x">link</a>"#);
 }
 
-// Numbers and arithmetic in `{..}` render at runtime; the literal
-// `tabindex=3` becomes `"3"` at compile time.
+#[test]
+fn shorthand_attributes() {
+    let r#type = "text";
+    let disabled = true;
+    let hidden: Option<&str> = None;
+    let title = "x onmouseover=alert(1)";
+    let out = html! { <input {r#type} {disabled} {hidden} {title}> };
+    assert_eq!(
+        s(out),
+        r#"<input type="text" disabled title="x onmouseover=alert(1)">"#
+    );
+}
+
+#[test]
+fn js_attributes() {
+    let id = 7;
+    let name = "\"Ada\" & co";
+    let none: Option<Js> = None;
+    let out = html! {
+        <button onclick={js!("select({id}, {name})")} data-hx-on:click={js!("a && b")} onfocus={none} onblur="save()">x</button>
+    };
+    assert_eq!(
+        s(out),
+        concat!(
+            r#"<button onclick="select(7, &quot;\&quot;Ada\&quot; \u0026 co&quot;)""#,
+            r#" data-hx-on:click="a &amp;&amp; b" onblur="save()">x</button>"#,
+        )
+    );
+}
+
+// A literal `javascript:` URL is part of the source, so it is not blocked.
+#[test]
+fn url_attributes() {
+    let bad = " \tJaVa\nScRiPt:alert(1)";
+    let vb = "vbscript:x";
+    let ok = "/about?a=1&b=2";
+    let out = html! {
+        <a href={bad}>a</a><img src={vb}><a href={ok}>b</a>
+        <a href={js!("history.back()")}>c</a><a href="javascript:void(0)">d</a>
+    };
+    assert_eq!(
+        s(out),
+        concat!(
+            r#"<a href="about:invalid#blocked">a</a><img src="about:invalid#blocked">"#,
+            r#"<a href="/about?a=1&amp;b=2">b</a><a href="javascript:history.back()">c</a>"#,
+            r#"<a href="javascript:void(0)">d</a>"#,
+        )
+    );
+}
+
+#[test]
+fn static_urls() {
+    const APP: &str = "/static/app.js";
+    let analytics: Option<&'static str> = None;
+    let out =
+        html! { <base href={APP}><script src={APP}></script><script src={analytics}></script> };
+    assert_eq!(
+        s(out),
+        r#"<base href="/static/app.js"><script src="/static/app.js"></script><script></script>"#
+    );
+}
+
+#[test]
+fn htmx_json_attributes() {
+    use std::collections::BTreeMap;
+    let text = r#"{"id": 1}"#;
+    let map = BTreeMap::from([("id", 1)]);
+    let out = html! {
+        <div hx-vals={text}></div><div hx-vals={map}></div>
+        <div hx-headers={js!("token: getToken()")}></div>
+    };
+    assert_eq!(
+        s(out),
+        concat!(
+            r#"<div hx-vals="{&quot;id&quot;: 1}"></div><div hx-vals="{&quot;id&quot;:1}"></div>"#,
+            r#"<div hx-headers="js:token: getToken()"></div>"#,
+        )
+    );
+}
+
+#[test]
+fn srcdoc() {
+    let user = "<script>alert(1)</script>";
+    let doc = html! { <p>{user}</p> };
+    let out = html! { <iframe srcdoc={doc}></iframe><iframe srcdoc={user}></iframe> };
+    assert_eq!(
+        s(out),
+        concat!(
+            r#"<iframe srcdoc="&lt;p&gt;&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;&lt;/p&gt;"></iframe>"#,
+            r#"<iframe srcdoc="&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;"></iframe>"#,
+        )
+    );
+}
+
 #[test]
 fn numeric_and_expression_attributes() {
     let w = 640u32;
@@ -162,8 +293,7 @@ fn numeric_and_expression_attributes() {
     );
 }
 
-// `Ipv4Addr` implements `Display` but not `Render`, so it renders through
-// `Display`, both as an attribute and as text.
+// `Ipv4Addr` implements `Display` but not `Render`.
 #[test]
 fn display_fallback() {
     let ip = std::net::Ipv4Addr::LOCALHOST;
@@ -171,12 +301,6 @@ fn display_fallback() {
     assert_eq!(s(out), r#"<code data-ip="127.0.0.1">127.0.0.1</code>"#);
 }
 
-// --------------------------------------------------
-// Tests: Rust inside the markup
-// --------------------------------------------------
-
-// A collected `Vec<Markup>` renders each item. A lazy iterator has to go
-// through `each`. Both give the same, escaped, result.
 #[test]
 fn loops_with_collections_and_each() {
     let items = ["one", "<two>"];
@@ -188,8 +312,6 @@ fn loops_with_collections_and_each() {
     assert_eq!(s(b), expected);
 }
 
-// `if` / `else` and `bool::then` are plain Rust. `then` gives an `Option`,
-// and `None` renders nothing.
 #[test]
 fn conditionals() {
     let logged_in = true;
@@ -203,12 +325,6 @@ fn conditionals() {
     assert_eq!(s(out), r#"<nav><a href="/logout">Log out</a></nav>"#);
 }
 
-// --------------------------------------------------
-// Tests: reusing markup
-// --------------------------------------------------
-
-// Without `#[component]`, a function returning `Markup` is called inside
-// `{..}` like any other expression.
 #[test]
 fn components_are_just_functions() {
     fn card(title: &str, body: Markup) -> Markup {
@@ -221,7 +337,6 @@ fn components_are_just_functions() {
     );
 }
 
-// Any type implementing `Render` can go inside `{..}`.
 #[test]
 fn custom_render_impl() {
     struct Badge(u32);
@@ -234,8 +349,6 @@ fn custom_render_impl() {
     assert_eq!(s(out), r#"<div><span class="badge">5</span></div>"#);
 }
 
-// `Markup` is maud's type, so it passes between maud's `html!` and ours in
-// both directions.
 #[test]
 fn interop_with_maud() {
     let from_maud = maud::html! { b { "maud" } };
@@ -244,19 +357,17 @@ fn interop_with_maud() {
     assert_eq!(s(back), "<div><p><b>maud</b></p></div>");
 }
 
-// --------------------------------------------------
-// Tests: fragments, comments, raw text and spreads
-// --------------------------------------------------
-
-// `<>..</>` adds no tag of its own; `<!-- "..." -->` becomes an HTML comment.
 #[test]
 fn fragments_and_comments() {
-    let out = html! { <><!-- "a comment" --><b>a</b><i>b</i></> };
-    assert_eq!(s(out), "<!-- a comment --><b>a</b><i>b</i>");
+    let out = html! {
+        <>
+            // a comment
+            <b>a</b><i>b</i>
+        </>
+    };
+    assert_eq!(s(out), "<b>a</b><i>b</i>");
 }
 
-// CSS and JS in a string literal go out as written: `>`, `<`, `&&` and the
-// quotes are left alone.
 #[test]
 fn script_and_style_are_not_escaped() {
     let out = html! {
@@ -269,22 +380,8 @@ fn script_and_style_are_not_escaped() {
     );
 }
 
-// A `{..}` block where an attribute would go is written into the tag as is.
-#[test]
-fn spread_attribute_block() {
-    let extra = "data-x";
-    let out = html! { <div {extra}></div> };
-    assert_eq!(s(out), "<div data-x></div>");
-}
-
-// --------------------------------------------------
-// Tests: calling the macro
-// --------------------------------------------------
-//
-// To keep the spaces in unquoted text, the macro finds its own call in the
-// source file. These tests check that this works however the call is
-// written.
-
+// Unquoted text is rebuilt from token positions, which must be usable
+// however the macro is called.
 #[test]
 fn called_with_path() {
     let out = htmloxide::html! { <p>Path call works</p> };
@@ -297,7 +394,6 @@ fn called_with_parens() {
     assert_eq!(s(out), "<p>Paren call works</p>");
 }
 
-// An `html!` inside another `html!`.
 #[test]
 fn nested_macro_text() {
     let out = html! { <ul>{each((1..=2).map(|i| html! { <li>Item number {i}</li> }))}</ul> };
@@ -307,40 +403,94 @@ fn nested_macro_text() {
     );
 }
 
-// --------------------------------------------------
-// Tests: {..} blocks
-// --------------------------------------------------
-
 #[test]
 fn blocks_borrow_instead_of_moving() {
     let name = String::from("Ada");
     let class = String::from("big");
     let out = html! { <p class={class}>{name}</p> };
-    // both still usable afterwards
     assert_eq!(name.len() + class.len(), 6);
     assert_eq!(s(out), r#"<p class="big">Ada</p>"#);
 }
 
-// A lone `{..}` in `<style>` / `<script>` still goes through `Render`.
-// Plain strings are escaped, so data can't close the `<script>` early;
-// trusted CSS or JS is passed in `PreEscaped`.
 #[test]
-fn blocks_inside_style_and_script() {
-    const CSS: &str = "a > b { color: red }";
-    let data = "</script><b>";
-    let out = html! { <style>{PreEscaped(CSS)}</style><script>{data}</script> };
+fn markup_inside_blocks() {
+    let out = html! { <p>{<b>Hi</b>} {<>there</>}</p> };
+    assert_eq!(s(out), "<p><b>Hi</b> there</p>");
+}
+
+#[test]
+fn script_values_are_data() {
+    let code = "alert(1)";
     assert_eq!(
-        s(out),
-        "<style>a > b { color: red }</style><script>&lt;/script&gt;&lt;b&gt;</script>"
+        s(html! { <script>{code}</script> }),
+        r#"<script>"alert(1)"</script>"#
+    );
+
+    let name = "</script><script>alert(1)</script>";
+    assert_eq!(
+        s(html! { <script>{name}</script> }),
+        r#"<script>"\u003c/script\u003e\u003cscript\u003ealert(1)\u003c/script\u003e"</script>"#
+    );
+
+    let tricky = "\"\\\n\u{2028}&";
+    assert_eq!(
+        s(html! { <script>{tricky}</script> }),
+        r#"<script>"\"\\\n\u2028\u0026"</script>"#
     );
 }
 
-// --------------------------------------------------
-// Tests: whitespace
-// --------------------------------------------------
+// JSON cannot hold NaN, so it is written as `null`.
+#[test]
+fn js_template_values() {
+    use std::collections::BTreeMap;
+    let n = 3;
+    let x = 1.5;
+    let nan = f64::NAN;
+    let yes = true;
+    let c = 'c';
+    let none: Option<u8> = None;
+    let list = vec!["a", "<b>"];
+    let map = BTreeMap::from([("k", 1)]);
+    let out = html! {
+        <script>{js!("f({n},{x},{nan},{yes},{c},{none},{list},{map});")}</script>
+    };
+    assert_eq!(
+        s(out),
+        r#"<script>f(3,1.5,null,true,"c",null,["a","\u003cb\u003e"],{"k":1});</script>"#
+    );
+}
 
-// Between two siblings that aren't text, a space on the same line is kept as
-// one space, and no space stays no space (the JSX rule).
+#[test]
+fn js_template_arguments() {
+    let inner = js!("go()");
+    let code = js!("if ({}) {{ {inner}; {n} }}", 1 + 1, n = "x");
+    assert_eq!(code.as_str(), r#"if (2) { go(); "x" }"#);
+}
+
+#[test]
+fn code_cant_end_its_element() {
+    const JS: &str = "x = '</script><SCRIPT>'; y = a < b;";
+    let css = "a::after { content: '</STYLE>'; } p > a { color: red }";
+    let out = html! { <script>{Js::from_static(JS)}</script><style>{css}</style> };
+    assert_eq!(
+        s(out),
+        concat!(
+            r"<script>x = '</\u0073cript><\u0053CRIPT>'; y = a < b;</script>",
+            r"<style>a::after { content: '</\53 TYLE>'; } p > a { color: red }</style>",
+        )
+    );
+}
+
+#[test]
+fn json_island() {
+    let todos = ["one", "two"];
+    let out = html! { <script type="application/json" id="todos">{todos}</script> };
+    assert_eq!(
+        s(out),
+        r#"<script type="application/json" id="todos">["one","two"]</script>"#
+    );
+}
+
 #[test]
 fn whitespace_between_siblings_follows_jsx() {
     let (a, b) = (1, "x");
@@ -350,7 +500,6 @@ fn whitespace_between_siblings_follows_jsx() {
     assert_eq!(s(out), "<p><b>bold</b> x <i>it</i></p>");
     let out = html! { <p>{a}{b}</p> };
     assert_eq!(s(out), "<p>1x</p>");
-    // Newlines between siblings are formatting, not content.
     let out = html! {
         <ul>
             <li>a</li>
@@ -358,4 +507,25 @@ fn whitespace_between_siblings_follows_jsx() {
         </ul>
     };
     assert_eq!(s(out), "<ul><li>a</li><li>b</li></ul>");
+}
+
+#[test]
+fn line_breaks_in_text_follow_jsx() {
+    let n = 2;
+    let out = html! {
+        <p>
+            Hello
+            world
+        </p>
+    };
+    assert_eq!(s(out), "<p>Hello world</p>");
+    let out = html! {
+        <li>
+            <a>x</a>
+            {n} items
+        </li>
+    };
+    assert_eq!(s(out), "<li><a>x</a>2 items</li>");
+    let out = html! { <pre>"a\n  b"</pre> };
+    assert_eq!(s(out), "<pre>a\n  b</pre>");
 }

@@ -1,19 +1,17 @@
-//! Shared, live todo list: htmloxide (async components) + htmx + Server-Sent Events.
+//! A shared todo list that updates live in every open tab, built with
+//! htmloxide, htmx and Server-Sent Events. Run with `cargo run -p live-todos`
+//! and open http://127.0.0.1:3000 in two tabs.
 //!
-//! [htmx](https://htmx.org) is a small JavaScript library: HTML attributes such
-//! as `hx-post` send requests, and HTML that comes back is swapped into the
-//! page. Server-Sent Events (SSE) are a long-lived HTTP response through which
-//! the server pushes messages to the browser. Together they make a page that
-//! updates live with no hand-written JavaScript.
+//! [htmx](https://htmx.org) is a JavaScript library driven by HTML
+//! attributes: `hx-post` sends a request, and HTML that comes back is swapped
+//! into the page. Server-Sent Events (SSE) are a long-lived HTTP response
+//! through which the server pushes messages to the browser.
 //!
-//! * Every mutation is a plain `hx-post` / `hx-delete` with `hx-swap="none"`;
-//!   the handler just changes state and broadcasts that something changed.
-//! * Every open tab holds one SSE connection (`/events`). On each broadcast the
-//!   server re-renders the affected component and pushes the HTML as a named
-//!   event; htmx swaps it into the element with the matching `sse-swap`.
-//! * A clock (every second) and a live viewer count use the same channel.
-//!
-//! Run with `cargo run -p live-todos`, open http://127.0.0.1:3000 in two tabs.
+//! Each change is a plain `hx-post` / `hx-delete` whose response is ignored
+//! (`hx-swap="none"`); the handler changes the state and broadcasts what
+//! changed. Each tab holds one SSE connection, on which the server pushes
+//! the re-rendered component as an event named after it, and htmx swaps it
+//! into the element whose `sse-swap` has that name.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -23,18 +21,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::Router;
 use axum::extract::{Form, Path, State};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post};
 use futures_util::stream::{self, Stream, StreamExt};
-use htmloxide::{Markup, component, each, html, html_async};
+use htmloxide::{Markup, component, html, html_async};
 use serde::Deserialize;
 use tokio::sync::{RwLock, broadcast};
 use tokio_stream::wrappers::{BroadcastStream, IntervalStream};
-
-// --------------------------------------------------
-// Data: todos and their store
-// --------------------------------------------------
 
 #[derive(Clone)]
 struct Todo {
@@ -43,8 +37,8 @@ struct Todo {
     done: bool,
 }
 
-/// Stand-in for a database: every call is async, and `list` is a little slow,
-/// like a real query.
+/// Stands in for a database: every call is async, and `list` is slow like a
+/// real query.
 struct Store {
     todos: RwLock<Vec<Todo>>,
     next_id: AtomicU32,
@@ -63,7 +57,6 @@ impl Store {
             done: false,
         });
     }
-    // Returns `false` when no todo has this id.
     async fn toggle(&self, id: u32) -> bool {
         let mut todos = self.todos.write().await;
         todos
@@ -72,7 +65,6 @@ impl Store {
             .map(|t| t.done = !t.done)
             .is_some()
     }
-    // Returns `false` when no todo has this id.
     async fn remove(&self, id: u32) -> bool {
         let mut todos = self.todos.write().await;
         let before = todos.len();
@@ -81,11 +73,6 @@ impl Store {
     }
 }
 
-// --------------------------------------------------
-// Data: app state and update messages
-// --------------------------------------------------
-
-/// What changed; each SSE client re-renders the matching fragment.
 #[derive(Clone, Copy, Debug)]
 enum Update {
     Todos,
@@ -93,8 +80,6 @@ enum Update {
     Clock,
 }
 
-/// Everything the handlers share. `updates` is a broadcast channel: every
-/// `send` reaches every open SSE connection.
 struct AppState {
     store: Store,
     viewers: AtomicUsize,
@@ -102,10 +87,6 @@ struct AppState {
 }
 
 type Shared = Arc<AppState>;
-
-// --------------------------------------------------
-// Component: Layout
-// --------------------------------------------------
 
 const CSS: &str = r#"
   body { font-family: system-ui, sans-serif; max-width: 34rem; margin: 3rem auto; padding: 0 1rem; color: #222; }
@@ -121,8 +102,6 @@ const CSS: &str = r#"
   .htmx-settling li { transition: background .4s; }
 "#;
 
-// The page shell: loads htmx and its SSE extension, and opens the SSE
-// connection on `<body>`. `PreEscaped` writes the CSS without escaping.
 #[component]
 fn Layout(#[prop(into)] title: String, children: Markup) -> Markup {
     html! {
@@ -131,12 +110,12 @@ fn Layout(#[prop(into)] title: String, children: Markup) -> Markup {
             <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
-                <title>{&title}</title>
+                <title>{title}</title>
                 <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.10/dist/htmx.min.js"></script>
                 <script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
-                <style>{htmloxide::PreEscaped(CSS)}</style>
+                <style>{CSS}</style>
             </head>
-            // One EventSource for the whole page; children pick events by name.
+            // One SSE connection for the whole page.
             <body hx-ext="sse" sse-connect="/events">
                 {children}
             </body>
@@ -144,12 +123,6 @@ fn Layout(#[prop(into)] title: String, children: Markup) -> Markup {
     }
 }
 
-// --------------------------------------------------
-// Component: Clock
-// --------------------------------------------------
-
-// The current UTC time, worked out from the Unix timestamp. Re-rendered and
-// pushed to every tab once a second.
 #[component]
 fn Clock() -> Markup {
     let secs = SystemTime::now()
@@ -160,41 +133,24 @@ fn Clock() -> Markup {
     html! { <span>server time {format!("{h:02}:{m:02}:{s:02}")} UTC</span> }
 }
 
-// --------------------------------------------------
-// Component: Viewers
-// --------------------------------------------------
-
-// How many tabs are connected, i.e. how many SSE connections are open.
 #[component]
 fn Viewers(count: usize) -> Markup {
     let label = if count == 1 { "viewer" } else { "viewers" };
     html! { <span>{count} {label}</span> }
 }
 
-// --------------------------------------------------
-// Component: TodoItem
-// --------------------------------------------------
-
-// One todo. The checkbox and the delete button send their request and ignore
-// the response (`hx-swap="none"`): the new list arrives over SSE instead,
-// in this tab and in every other one.
 #[component]
 fn TodoItem(todo: &Todo) -> Markup {
     html! {
         <li class={todo.done.then_some("done")}>
             <input type="checkbox" checked={todo.done}
                 hx-post={format!("/todos/{}/toggle", todo.id)} hx-swap="none">
-            <span>{&todo.title}</span>
-            <button hx-delete={format!("/todos/{}", todo.id)} hx-swap="none" aria-label="Delete">"×"</button>
+            <span>{todo.title}</span>
+            <button hx-delete={format!("/todos/{}", todo.id)} hx-swap="none" aria-label="Delete">x</button>
         </li>
     }
 }
 
-// --------------------------------------------------
-// Component: TodoList
-// --------------------------------------------------
-
-/// Async: reads from the store where the data is actually needed.
 #[component]
 async fn TodoList(store: &Store) -> Markup {
     let todos = store.list().await;
@@ -203,18 +159,11 @@ async fn TodoList(store: &Store) -> Markup {
         return html! { <p class="empty">Nothing to do. Add something above.</p> };
     }
     html! {
-        <ul>{each(todos.iter().map(|todo| html! { <TodoItem todo={todo} /> }))}</ul>
+        <ul>@for todo in &todos { <TodoItem {todo} /> }</ul>
         <p class="meta">{left} of {todos.len()} left</p>
     }
 }
 
-// --------------------------------------------------
-// Component: Page
-// --------------------------------------------------
-
-// The whole page. Each `sse-swap="name"` element has its content replaced
-// whenever an SSE event with that name arrives. The form clears itself after
-// a successful post (`hx-on::after-request`).
 #[component]
 async fn Page(state: &AppState) -> Markup {
     let store = &state.store;
@@ -234,7 +183,7 @@ async fn Page(state: &AppState) -> Markup {
                 <button>Add</button>
             </form>
 
-            <div id="todos" sse-swap="todos"><TodoList store={store} /></div>
+            <div id="todos" sse-swap="todos"><TodoList {store} /></div>
 
             <p class="hint">Open this page in a second tab: changes show up in both, pushed over SSE.</p>
         </Layout>
@@ -242,32 +191,19 @@ async fn Page(state: &AppState) -> Markup {
     .await
 }
 
-// --------------------------------------------------
-// Handler: index
-// --------------------------------------------------
-
-// `GET /`: the full page. `html_async!` is an `async move` block, so the
-// `AppState` is borrowed out of the `Arc` first and the block captures the
-// reference.
-async fn index(State(state): State<Shared>) -> Html<String> {
+// `html_async!` is an `async move` block, so the state is borrowed out of the
+// `Arc` first and the block captures the reference.
+async fn index(State(state): State<Shared>) -> Markup {
     let state = &*state;
-    Html(html_async! { <Page state={state} /> }.await.into_string())
+    html_async! { <Page {state} /> }.await
 }
 
-// --------------------------------------------------
-// Handler: add_todo
-// --------------------------------------------------
-//
-// The three todo handlers follow the same shape: change the store, broadcast
-// `Update::Todos`, and answer with an empty `204 No Content`. `send` only
-// fails when no tab is connected, which is fine, so its result is ignored.
-
-/// The form body of `POST /todos`.
 #[derive(Deserialize)]
 struct NewTodo {
     title: String,
 }
 
+// `send` fails only when no tab is connected, so its result is ignored.
 async fn add_todo(State(state): State<Shared>, Form(form): Form<NewTodo>) -> StatusCode {
     let title = form.title.trim();
     if title.is_empty() {
@@ -278,10 +214,6 @@ async fn add_todo(State(state): State<Shared>, Form(form): Form<NewTodo>) -> Sta
     StatusCode::NO_CONTENT
 }
 
-// --------------------------------------------------
-// Handler: toggle_todo
-// --------------------------------------------------
-
 async fn toggle_todo(State(state): State<Shared>, Path(id): Path<u32>) -> StatusCode {
     if !state.store.toggle(id).await {
         return StatusCode::NOT_FOUND;
@@ -289,10 +221,6 @@ async fn toggle_todo(State(state): State<Shared>, Path(id): Path<u32>) -> Status
     let _ = state.updates.send(Update::Todos);
     StatusCode::NO_CONTENT
 }
-
-// --------------------------------------------------
-// Handler: delete_todo
-// --------------------------------------------------
 
 async fn delete_todo(State(state): State<Shared>, Path(id): Path<u32>) -> StatusCode {
     if !state.store.remove(id).await {
@@ -302,15 +230,7 @@ async fn delete_todo(State(state): State<Shared>, Path(id): Path<u32>) -> Status
     StatusCode::NO_CONTENT
 }
 
-// --------------------------------------------------
-// Handler: events
-// --------------------------------------------------
-//
-// `GET /events`: one long-lived SSE response per open tab. It merges the
-// broadcast updates with a one-second clock tick, renders the component that
-// matches each update, and sends the HTML as an event named after it.
-
-/// Decrements the viewer count when an SSE connection's stream is dropped.
+/// Counts an SSE connection for as long as it is alive.
 struct ViewerGuard(Shared);
 impl ViewerGuard {
     fn new(state: Shared) -> Self {
@@ -326,17 +246,16 @@ impl Drop for ViewerGuard {
     }
 }
 
-/// Renders the component for `update` as an SSE event. The event name
-/// matches the `sse-swap` attribute of the element it replaces.
+/// The event name matches the `sse-swap` of the element it replaces.
 async fn render_update(state: &AppState, update: Update) -> Event {
     let (name, markup) = match update {
         Update::Todos => {
             let store = &state.store;
-            ("todos", html_async! { <TodoList store={store} /> }.await)
+            ("todos", html_async! { <TodoList {store} /> }.await)
         }
         Update::Viewers => {
             let count = state.viewers.load(Ordering::Relaxed);
-            ("viewers", html! { <Viewers count={count} /> })
+            ("viewers", html! { <Viewers {count} /> })
         }
         Update::Clock => ("clock", html! { <Clock /> }),
     };
@@ -344,52 +263,38 @@ async fn render_update(state: &AppState, update: Update) -> Event {
 }
 
 async fn events(State(state): State<Shared>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    // Subscribe first, so this client also receives its own "viewers" bump.
+    // Subscribed before the guard is created, so this tab also receives its
+    // own viewer count.
     let updates = BroadcastStream::new(state.updates.subscribe())
-        // A lagging client missed something: just refresh the list.
+        // A tab that fell behind gets a fresh list.
         .map(|msg| msg.unwrap_or(Update::Todos));
     let guard = ViewerGuard::new(state.clone());
 
     let ticks =
         IntervalStream::new(tokio::time::interval(Duration::from_secs(1))).map(|_| Update::Clock);
 
-    // `select` merges both streams into one; `then` renders each update.
     let stream = stream::select(updates, ticks).then(move |update| {
         let state = state.clone();
         async move { render_update(&state, update).await }
     });
 
-    // The guard lives as long as the stream, i.e. the connection.
+    // Moving the guard into the stream ties it to the connection.
     let stream = stream.map(move |event| {
         let _keep_alive = &guard;
         Ok(event)
     });
 
-    // `KeepAlive` sends a comment line now and then, so idle connections
-    // aren't closed along the way.
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-// --------------------------------------------------
-// Handler: not_found
-// --------------------------------------------------
-
 async fn not_found() -> impl IntoResponse {
-    (
-        StatusCode::NOT_FOUND,
-        Html(html! { <h1>Not found</h1> }.into_string()),
-    )
+    (StatusCode::NOT_FOUND, html! { <h1>Not found</h1> })
 }
-
-// --------------------------------------------------
-// Entry point: main
-// --------------------------------------------------
 
 #[tokio::main]
 async fn main() {
-    // 64 is how far a slow tab can fall behind before it misses updates. The
-    // receiver returned here is dropped: each SSE connection subscribes its
-    // own.
+    // A tab that falls more than 64 updates behind misses some. Each SSE
+    // connection subscribes its own receiver.
     let (updates, _) = broadcast::channel(64);
     let state = Arc::new(AppState {
         store: Store {
@@ -420,11 +325,9 @@ async fn main() {
         .fallback(not_found)
         .with_state(state);
 
-    // `ADDR=0.0.0.0:8080 cargo run -p live-todos` listens elsewhere.
     let addr = std::env::var("ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
     println!("listening on http://{addr}");
-    // Ctrl+C stops the server cleanly.
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             tokio::signal::ctrl_c().await.ok();

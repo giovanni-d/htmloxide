@@ -1,16 +1,10 @@
-//! Tests for `#[component]`: required, default, optional and `into` props,
-//! children, generics, lifetimes, components in other modules, and calling a
-//! component as a plain function.
+//! `#[component]`: required, default, optional and `into` props, children,
+//! generics, lifetimes, and components in other modules.
 
 use std::borrow::Cow;
 
-use htmloxide::{Markup, Render, component, each, html};
+use htmloxide::{Markup, Render, component, html};
 
-// --------------------------------------------------
-// Component: Badge
-// --------------------------------------------------
-
-// The smallest component: one required prop, no children.
 #[component]
 fn Badge(count: u32) -> Markup {
     html! { <span class="badge">{count}</span> }
@@ -24,20 +18,10 @@ fn simple_prop() {
     );
 }
 
-// --------------------------------------------------
-// Component: Card
-// --------------------------------------------------
-
-// One prop of each kind:
-// - `title`: required.
-// - `subtitle`: optional, and `into`, so the tag passes a `&str` and the
-//   function gets an `Option<String>`.
-// - `featured`: `false` when left out.
-// - `children`: whatever is between `<Card>` and `</Card>`.
 #[component]
 fn Card(
     title: &str,
-    #[prop(optional, into)] subtitle: Option<String>,
+    #[prop(into)] subtitle: Option<String>,
     #[prop(default)] featured: bool,
     children: Markup,
 ) -> Markup {
@@ -50,8 +34,6 @@ fn Card(
     }
 }
 
-// First every prop is given (`featured` with no value means `true`), then
-// only the required ones: no `<h3>` and no `data-featured`.
 #[test]
 fn children_defaults_optional_and_into() {
     let name = String::from("Ada");
@@ -62,34 +44,27 @@ fn children_defaults_optional_and_into() {
     };
     assert_eq!(
         out.into_string(),
-        r#"<section class="card" data-featured><h2>Ada</h2><h3>intro</h3><p>Hello Ada</p></section>"#
+        r#"<section class="card" data-featured="true"><h2>Ada</h2><h3>intro</h3><p>Hello Ada</p></section>"#
     );
 
     let out = html! { <Card title="Bare"><i>x</i></Card> };
     assert_eq!(
         out.into_string(),
-        r#"<section class="card"><h2>Bare</h2><i>x</i></section>"#
+        r#"<section class="card" data-featured="false"><h2>Bare</h2><i>x</i></section>"#
     );
 }
 
-// --------------------------------------------------
-// Component: Layout
-// --------------------------------------------------
-
-// `level` has a default expression instead of `Default::default()`.
 #[component]
 fn Layout(#[prop(into)] title: String, #[prop(default = 1)] level: u8, children: Markup) -> Markup {
     html! {
         <!DOCTYPE html>
         <html>
-            <head><title>{&title}</title></head>
+            <head><title>{title}</title></head>
             <body data-level={level}>{children}</body>
         </html>
     }
 }
 
-// Components nested in a component's children, and `level` left at its
-// default of 1.
 #[test]
 fn nested_components_and_default_expr() {
     let out = html! {
@@ -101,21 +76,16 @@ fn nested_components_and_default_expr() {
     assert_eq!(
         out.into_string(),
         "<!DOCTYPE html><html><head><title>Home</title></head><body data-level=\"1\">\
-         <section class=\"card\"><h2>One</h2><span class=\"badge\">1</span></section>\
-         <section class=\"card\"><h2>Two</h2><span class=\"badge\">2</span></section>\
+         <section class=\"card\" data-featured=\"false\"><h2>One</h2><span class=\"badge\">1</span></section>\
+         <section class=\"card\" data-featured=\"false\"><h2>Two</h2><span class=\"badge\">2</span></section>\
          </body></html>"
     );
 }
 
-// --------------------------------------------------
-// Component: List
-// --------------------------------------------------
-
-// A generic component: `T` is inferred from the `items` given in the tag.
-// `_kind` adds a defaulted prop that doesn't involve `T`.
+// `_kind`'s setter must not declare `T`, which it could not infer.
 #[component]
 fn List<T: Render>(items: Vec<T>, #[prop(default = "ul")] _kind: &'static str) -> Markup {
-    html! { <ul>{each(items.iter().map(|i| html! { <li>{i}</li> }))}</ul> }
+    html! { <ul>@for i in &items { <li>{i}</li> }</ul> }
 }
 
 #[test]
@@ -124,13 +94,6 @@ fn generic_component() {
     assert_eq!(out.into_string(), "<ul><li>1</li><li>2</li><li>3</li></ul>");
 }
 
-// --------------------------------------------------
-// Component: Label
-// --------------------------------------------------
-
-// A named lifetime (`'a`) next to an elided one (`&str`, which becomes
-// `'props`), and a prop named after a Rust keyword: `r#for` in the function,
-// `for` in the tag.
 #[component]
 fn Label<'a>(text: Cow<'a, str>, r#for: &str) -> Markup {
     html! { <label for={r#for}>{text}</label> }
@@ -142,12 +105,22 @@ fn explicit_lifetimes_and_keyword_props() {
     assert_eq!(out.into_string(), r#"<label for="name">Name</label>"#);
 }
 
-// --------------------------------------------------
-// Component: ui::Button
-// --------------------------------------------------
+#[test]
+fn shorthand_props() {
+    let title = "Hi";
+    let featured = true;
+    let out = html! { <Card {title} subtitle="intro" {featured}>x</Card> };
+    assert_eq!(
+        out.into_string(),
+        r#"<section class="card" data-featured="true"><h2>Hi</h2><h3>intro</h3>x</section>"#
+    );
 
-// A component in another module. The tag names it by path, and its props
-// struct (`ButtonProps`) is never imported.
+    let text = Cow::Borrowed("Name");
+    let r#for = "name";
+    let out = html! { <Label {text} {r#for} /> };
+    assert_eq!(out.into_string(), r#"<label for="name">Name</label>"#);
+}
+
 mod ui {
     use htmloxide::{Markup, component, html};
 
@@ -166,11 +139,6 @@ fn path_components_without_importing_props() {
     );
 }
 
-// --------------------------------------------------
-// Component: Footer
-// --------------------------------------------------
-
-// No props at all: `<Footer />` calls `build()` on an empty builder.
 #[component]
 fn Footer() -> Markup {
     html! { <footer>"(c) 2026"</footer> }
@@ -184,22 +152,131 @@ fn no_props() {
     );
 }
 
-// --------------------------------------------------
-// Tests: other ways to use a component
-// --------------------------------------------------
+#[component]
+fn Titled<T: Render>(title: T, children: Markup) -> Markup {
+    html! { <section><h2>{title}</h2>{children}</section> }
+}
 
-// Outside `html!`, a component is a function taking its props struct.
+// The braces around `html! { .. }` must not reach the setter call.
+#[test]
+#[deny(unused_braces)]
+fn macro_prop_value() {
+    let out = html! { <Titled title={html! { <b>Hi</b> }}><p>Body</p></Titled> };
+    assert_eq!(
+        out.into_string(),
+        "<section><h2><b>Hi</b></h2><p>Body</p></section>"
+    );
+}
+
+#[component]
+fn Profile(
+    nickname: Option<String>,
+    #[prop(into)] bio: Option<String>,
+    #[prop(default = Some("/default.png"))] avatar: Option<&str>,
+) -> Markup {
+    html! { <p data-nick={nickname} title={bio}><img src={avatar}></p> }
+}
+
+#[test]
+fn option_props() {
+    let out = html! { <Profile /> };
+    assert_eq!(out.into_string(), r#"<p><img src="/default.png"></p>"#);
+
+    let out = html! { <Profile nickname={String::from("ada")} bio="hi" avatar="/a.png" /> };
+    assert_eq!(
+        out.into_string(),
+        r#"<p data-nick="ada" title="hi"><img src="/a.png"></p>"#
+    );
+
+    let out =
+        html! { <Profile nickname={Some(String::from("ada"))} bio={Some("hi")} avatar={None} /> };
+    assert_eq!(
+        out.into_string(),
+        r#"<p data-nick="ada" title="hi"><img></p>"#
+    );
+
+    let nickname: Option<String> = None;
+    let bio: Option<&str> = Some("hi");
+    let out = html! { <Profile nickname={nickname} bio={bio} /> };
+    assert_eq!(
+        out.into_string(),
+        r#"<p title="hi"><img src="/default.png"></p>"#
+    );
+}
+
+#[component]
+fn Panel(children: Option<Markup>) -> Markup {
+    html! { <div>@if let Some(c) = children { {c} } else { "empty" }</div> }
+}
+
+#[test]
+fn optional_children() {
+    assert_eq!(html! { <Panel /> }.into_string(), "<div>empty</div>");
+    assert_eq!(
+        html! { <Panel><b>x</b></Panel> }.into_string(),
+        "<div><b>x</b></div>"
+    );
+}
+
+// The builder's type parameters are named after the props. Here they would
+// shadow the types `char` and `u8`.
+#[component]
+fn Glyph(char: char, #[prop(default = u8::MAX)] u8: u8) -> Markup {
+    html! { <i data-max={u8}>{char}</i> }
+}
+
+#[test]
+fn props_named_like_types() {
+    assert_eq!(
+        html! { <Glyph char='a' /> }.into_string(),
+        r#"<i data-max="255">a</i>"#
+    );
+}
+
+#[component]
+fn Dialog(title: Markup, #[prop(default)] children: Markup) -> Markup {
+    html! { <dialog><h2>{title}</h2>{children}</dialog> }
+}
+
+#[test]
+fn markup_props() {
+    let name = "<Ada>";
+    let admin = true;
+    let out = html! {
+        <Dialog title={<b>Hi {name}</b>}><p>Body</p></Dialog>
+        <Dialog title={<>Hi <b>there</b></>} />
+        <Dialog title={@if admin { <b>Admin</b> } else { User }} />
+        <Dialog title={ <i>a</i> <i>b</i> } />
+        <Dialog title={<Dialog title={<Badge count=2 />} />} />
+    };
+    assert_eq!(
+        out.into_string(),
+        concat!(
+            "<dialog><h2><b>Hi &lt;Ada&gt;</b></h2><p>Body</p></dialog>",
+            "<dialog><h2>Hi <b>there</b></h2></dialog>",
+            "<dialog><h2><b>Admin</b></h2></dialog>",
+            "<dialog><h2><i>a</i> <i>b</i></h2></dialog>",
+            r#"<dialog><h2><dialog><h2><span class="badge">2</span></h2></dialog></h2></dialog>"#,
+        )
+    );
+}
+
+#[test]
+fn rust_starting_with_angle_bracket_stays_rust() {
+    let out = html! { <Dialog title={<Markup as Default>::default()} /> };
+    assert_eq!(out.into_string(), "<dialog><h2></h2></dialog>");
+}
+
 #[test]
 fn still_callable_as_function() {
     let out = Badge(BadgeProps { count: 9 });
     assert_eq!(out.into_string(), r#"<span class="badge">9</span>"#);
 }
 
-// A component tag inside an `each(..)` closure, with a prop from the loop.
 #[test]
 fn components_in_loops() {
     let counts = [1u32, 2];
-    let out = html! { <div>{each(counts.iter().map(|&c| html! { <Badge count={c} /> }))}</div> };
+    let out = html! { <div>@for count in counts { <Badge {count} /> }</div> };
     assert_eq!(
         out.into_string(),
         r#"<div><span class="badge">1</span><span class="badge">2</span></div>"#

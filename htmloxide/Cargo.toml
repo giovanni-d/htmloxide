@@ -10,11 +10,17 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+axum = ["maud/axum"]
+
 [dependencies]
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 htmloxide-macros = { version = "=0.1.0", path = "../htmloxide-macros" }
 maud = "0.27.0"
+serde = "1.0.229"
+serde_json = "1.0.154"
 
 [dev-dependencies]
 maud = "0.27"
+serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "time"] }
